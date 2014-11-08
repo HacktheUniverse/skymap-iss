@@ -30,7 +30,9 @@ import com.google.android.stardroid.source.impl.PointSourceImpl;
 import com.google.android.stardroid.source.impl.TextSourceImpl;
 import com.google.android.stardroid.units.GeocentricCoordinates;
 import com.google.android.stardroid.util.Blog;
+import com.google.android.stardroid.util.Geometry;
 import com.google.android.stardroid.util.MiscUtil;
+import com.google.android.stardroid.util.TimeUtil;
 
 import android.content.res.Resources;
 import android.graphics.Color;
@@ -41,10 +43,14 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URL;
 import java.net.URLConnection;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.TimeZone;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -80,7 +86,7 @@ public class IssLayer extends AbstractSourceLayer {
   @Override
   protected int getLayerNameId() {
     // TODO(brent): Update to different preference
-    return R.string.show_hubble_layer_pref;
+    return R.string.show_planets_pref;
   }
 
   /** Thread Runnable which parses the orbital elements out of the Url. */
@@ -97,11 +103,22 @@ public class IssLayer extends AbstractSourceLayer {
       this.source = source;
     }
 
+    Date parseVectorTime(BufferedReader in) throws IOException,ParseException {
+      String s;
+      while ((s = in.readLine()) != null && !s.contains("Vector Time (GMT)")) {}
+      String date_string = s.trim().split("\\s+")[3];
+      DateFormat df = new SimpleDateFormat("yyyy/DDD/kk:mm:ss.SSS");
+      df.setTimeZone(TimeZone.getTimeZone("GMT"));
+      return df.parse(date_string);
+    }
+
     /**
      * Parses the OrbitalElements from the given BufferedReader.  Factored out
      * of {@link #getOrbitalElements} to simplify testing.
      */
-    OrbitalElements parseOrbitalElements(BufferedReader in) throws IOException {
+    OrbitalElements parseOrbitalElements(BufferedReader in)
+        throws IOException,ParseException {
+      Date epoch = parseVectorTime(in);
       String s;
       while ((s = in.readLine()) != null && !s.contains("M50 Keplerian")) {}
 
@@ -118,19 +135,60 @@ public class IssLayer extends AbstractSourceLayer {
 
 
       if (i == params.length) {  // we read all the data.
-        // TODO(serafini): Add magic here to create orbital elements or whatever.
         StringBuilder sb = new StringBuilder();
         for (int pi = 0; pi < params.length; pi++) {
           sb.append(" " + params[pi]);
         }
         Blog.d(this, "Params: " + sb);
+        OrbitalElements elements = convertNasaDataToOrbitalElements(params);
+        elements.epoch = epoch;
+        return elements;
       }
       return null;
     }
 
+    OrbitalElements convertNasaDataToOrbitalElements(float[] params) {
+      // See http://spaceflight1.nasa.gov/realdata/elements/index.html
+      float a_m = params[0];  // Semimajor axis in meters
+      float e = params[1];  // Eccentricity
+      float i = params[2];  // Inclination in degrees
+      float Wp = params[3];  // lower-case-omega, argument of perigee in degrees
+      // Right Ascension of the ascending node in degrees, a.k.a. upper-case-omega, a.k.a. Longitude of the ascending node.
+      float RA = params[4];
+      float TA = params[5];  // True anomaly in degrees
+      float MA = params[6];  // Mean anomaly in degrees
+      float Ha = params[7];  // height of apogee nautical miles
+      float Hp = params[8];  // height of perigee, nautical miles
+
+      // http://en.wikipedia.org/wiki/Longitude_of_the_periapsis#Calculation_from_state_vectors
+      float longitude_of_perigee_degrees = Wp + RA;
+
+      // http://en.wikipedia.org/wiki/Mean_longitude#Calculation
+      float mean_longitude_degrees = MA + longitude_of_perigee_degrees;
+
+      float METERS_IN_AU = 149597870700f;
+      float semimajor_axis_au = a_m / METERS_IN_AU;
+      float inclination_radians = i * Geometry.DEGREES_TO_RADIANS;
+      float right_ascension_node_radians = RA * Geometry.DEGREES_TO_RADIANS;
+      float longitude_of_perigee_radians = Wp * Geometry.DEGREES_TO_RADIANS;
+      float mean_longitude_radians = mean_longitude_degrees * Geometry.DEGREES_TO_RADIANS;
+
+      // NOTE: These are the M50 orbital elements, i.e. as of 1950-Jan-1.
+      // TODO: Compensate for earth's precession between M50 (a.k.a. B1950) and
+      // J2000 (which is used for all other calculations here).
+      // See http://earth-info.nga.mil/GandG/publications/tr8350.2/tr8350.2-a/Appendix.pdf
+      return new OrbitalElements(
+          semimajor_axis_au,
+          e,
+          inclination_radians,
+          right_ascension_node_radians,
+          longitude_of_perigee_radians,
+          mean_longitude_radians);
+    }
+
     /**
      * Reads the given URL and returns the OrbitalElements associated with the object
-     * described therein.
+     * described therein. NOTE: These are M50 geocentric orbital elements.
      */
     OrbitalElements getOrbitalElements(String urlString) {
       BufferedReader in = null;
@@ -140,6 +198,8 @@ public class IssLayer extends AbstractSourceLayer {
         return parseOrbitalElements(in);
       } catch (IOException e) {
         Log.e(TAG, "Error reading Orbital Elements");
+      } catch (ParseException e) {
+        Log.e(TAG, "Error parsing Orbital Elements epoch");
       } finally {
         Closeables.closeSilently(in);
       }
@@ -167,6 +227,8 @@ public class IssLayer extends AbstractSourceLayer {
     private static final long UPDATE_FREQ_MS = 1L * TimeConstants.MILLISECONDS_PER_SECOND;
     private static final int ISS_COLOR = Color.YELLOW;
 
+    // TODO: Don't set a default position, so that the ISS doesn't appear in
+    // a fixed location if you don't have a net connection.
     private final GeocentricCoordinates coords = new GeocentricCoordinates(1f, 0f, 0f);
     private final ArrayList<PointSource> pointSources = new ArrayList<PointSource>();
     private final ArrayList<TextSource> textSources = new ArrayList<TextSource>();
@@ -186,12 +248,15 @@ public class IssLayer extends AbstractSourceLayer {
     }
 
     public synchronized void setOrbitalElements(OrbitalElements elements) {
+      // TODO: Only set this to true if the elements actually changed.
       this.orbitalElements = elements;
       orbitalElementsChanged = true;
     }
 
     @Override
     public List<String> getNames() {
+      // TODO: Change the search function to query getNames() more than once,
+      // so that ISS can be left out of the index until its location is known.
       return Lists.asList(name);
     }
 
@@ -207,8 +272,39 @@ public class IssLayer extends AbstractSourceLayer {
       if (orbitalElements == null) {
         return;
       }
-      // TODO(serafini): Update coords of Iss from OrbitalElements.
-      // issCoords.assign(...);
+
+      OrbitalElements elements_now;
+      if (orbitalElements.epoch == null) {
+        // |orbitalElements| is kept up to date.
+        elements_now = orbitalElements;
+      } else {
+        // Project |orbitalElements| forward to now.
+        // values from NASA factsheet: http://nssdc.gsfc.nasa.gov/planetary/factsheet/fact_notes.html
+        double EARTH_MASS = 5.9726e24;  // kg
+        double G = 6.67384e-11;  // meters^3 kilograms^-1 seconds^-2
+        double METERS_IN_AU = 149597870700d;
+        double a = orbitalElements.distance * METERS_IN_AU;
+        double mu = G * EARTH_MASS;
+        double period = 2 * Math.PI * Math.sqrt(a * a * a / mu);  // seconds
+
+        long time_delta_ms = lastUpdateTimeMs - orbitalElements.epoch.getTime();
+        double time_delta = ((double)time_delta_ms) / 1000;  // seconds
+        double orbits = time_delta / period;
+        double phase_radians = 2 * Math.PI * (orbits % 1.0);
+        double mean_longitude_now = (orbitalElements.meanLongitude + phase_radians) % (2 * Math.PI);
+
+        elements_now = new OrbitalElements(
+          orbitalElements.distance,
+          orbitalElements.eccentricity,
+          orbitalElements.inclination,
+          orbitalElements.ascendingNode,
+          orbitalElements.perihelion,
+          (float)mean_longitude_now
+        );
+      }
+
+      coords.assign(GeocentricCoordinates.getInstance(elements_now, model.getZenith()));
+      Blog.d(this, "Changed ISS coords to " + coords.toString());
     }
 
     @Override
@@ -235,11 +331,15 @@ public class IssLayer extends AbstractSourceLayer {
 
     @Override
     public List<? extends TextSource> getLabels() {
+      // TODO: Change the display update to query getLabels() more than once,
+      // so that ISS can be left out of the view until its location is known.
       return textSources;
     }
 
     @Override
     public List<? extends PointSource> getPoints() {
+      // TODO: Change the display update to query getPoints() more than once,
+      // so that ISS can be left out of the view until its location is known.
       return pointSources;
     }
   }

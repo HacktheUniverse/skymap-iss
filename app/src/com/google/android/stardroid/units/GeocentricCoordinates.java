@@ -16,11 +16,13 @@ package com.google.android.stardroid.units;
 
 import android.util.FloatMath;
 
+import com.google.android.stardroid.provider.ephemeris.OrbitalElements;
 import com.google.android.stardroid.util.Geometry;
+import com.google.android.stardroid.util.MathUtil;
 
 /**
  * This class corresponds to an object's location in Euclidean space
- * when it is projected onto a unit sphere (with the Earth at the
+ * when it is projected onto a unit sphere (with the earthbound viewer at the
  * center).
  *
  * @author Brent Bryan
@@ -29,6 +31,16 @@ public class GeocentricCoordinates extends Vector3 {
 
   public GeocentricCoordinates(float x, float y, float z) {
     super(x, y, z);
+  }
+
+  /**
+   * Subtracts the values of the given geocentric coordinates from this
+   * object.
+   */
+  public void Subtract(GeocentricCoordinates other) {
+    this.x -= other.x;
+    this.y -= other.y;
+    this.z -= other.z;
   }
 
   /** Recomputes the x, y, and z variables in this class based on the specified
@@ -95,5 +107,38 @@ public class GeocentricCoordinates extends Vector3 {
 
   public static GeocentricCoordinates getInstanceFromVector3(Vector3 v) {
     return new GeocentricCoordinates(v.x, v.y, v.z);
+  }
+
+  public static GeocentricCoordinates getInstance(OrbitalElements elem,
+      GeocentricCoordinates zenith) {
+    float anomaly = elem.getAnomaly();
+    float ecc = elem.eccentricity;
+    float radius = elem.distance * (1 - ecc * ecc) / (1 + ecc * MathUtil.cos(anomaly));
+
+    // geocentric rectangular coordinates of satellite
+    float per = elem.perihelion;
+    float asc = elem.ascendingNode;
+    float inc = elem.inclination;
+    float xh = radius *
+        (MathUtil.cos(asc) * MathUtil.cos(anomaly + per - asc) -
+         MathUtil.sin(asc) * MathUtil.sin(anomaly + per - asc) *
+         MathUtil.cos(inc));
+    float yh = radius *
+        (MathUtil.sin(asc) * MathUtil.cos(anomaly + per - asc) +
+        MathUtil.cos(asc) * MathUtil.sin(anomaly + per - asc) *
+        MathUtil.cos(inc));
+    float zh = radius * (MathUtil.sin(anomaly + per - asc) * MathUtil.sin(inc));
+
+    double EARTH_RADIUS_M = 6.371e6;  // meters
+		double METERS_IN_AU = 149597870700d;
+    double EARTH_RADIUS_AU = EARTH_RADIUS_M / METERS_IN_AU;
+    GeocentricCoordinates viewer_coords = zenith;
+    viewer_coords.normalize();
+    viewer_coords.scale((float)EARTH_RADIUS_AU);  // Ignores deviation due to mountains, oblateness, etc.
+
+    GeocentricCoordinates object_coords = new GeocentricCoordinates(xh, yh, zh);
+    object_coords.Subtract(viewer_coords);
+    object_coords.normalize();
+    return object_coords;
   }
 }

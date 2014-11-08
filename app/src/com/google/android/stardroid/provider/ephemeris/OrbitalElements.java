@@ -20,6 +20,8 @@ import com.google.android.stardroid.util.Geometry;
 import com.google.android.stardroid.util.MathUtil;
 import com.google.android.stardroid.util.MiscUtil;
 
+import java.util.Date;
+
 /**
  * This class wraps the six parameters which define the path an object takes as
  * it orbits the sun.
@@ -48,6 +50,8 @@ public class OrbitalElements {
   public final float ascendingNode;  // Longitude of ascending node (AngleUtils.RADIANS)
   public final float perihelion;     // Longitude of perihelion (AngleUtils.RADIANS)
   public final float meanLongitude;  // Mean longitude (AngleUtils.RADIANS)
+  // Date at which the mean longitude applies, or null to indicate the present.
+  public Date epoch;
 
   public OrbitalElements(float d, float e, float i, float a, float p, float l) {
     this.distance = d;
@@ -56,6 +60,7 @@ public class OrbitalElements {
     this.ascendingNode = a;
     this.perihelion = p;
     this.meanLongitude = l;
+    this.epoch = null;
   }
 
   public float getAnomaly() {
