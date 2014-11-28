@@ -15,3 +15,4 @@ the bin directory and will be named Stardroid-debug.apk. Make sure that
 your device can handle binaries that don't come from the market, and you
 should be good to go.
 
+Demo from Hack the Universe presentation: http://youtu.be/ljqW89BZqVE
